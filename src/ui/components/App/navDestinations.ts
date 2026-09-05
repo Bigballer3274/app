@@ -1,4 +1,4 @@
-import { Compass, Library, MessageCircle, Search, Settings, Users } from "lucide-react";
+import { Library, MessageCircle, Search, Settings, Users } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import type { TranslationKey } from "../../../core/i18n/context";
@@ -29,14 +29,6 @@ export const NAV_DESTINATIONS: readonly NavDestination[] = [
     labelKey: "common.bottomNav.groups",
     isActive: (pathname) => pathname.startsWith("/group-chats"),
     dataTourId: "nav-groups",
-  },
-  {
-    id: "discover",
-    to: "/discover",
-    icon: Compass,
-    labelKey: "common.bottomNav.discover",
-    isActive: (pathname) => pathname.startsWith("/discover"),
-    dataTourId: "nav-discover",
   },
   {
     id: "library",
@@ -70,25 +62,31 @@ export function resolveNavEntries(ids?: readonly NavItemId[] | null): NavEntry[]
   const source = ids && ids.length > 0 ? ids : DEFAULT_NAV_ITEMS;
   const seen = new Set<NavItemId>();
   const entries: NavEntry[] = [];
+
   for (const id of source) {
     if (seen.has(id)) continue;
     seen.add(id);
+
     if (id === "create") {
       entries.push({ kind: "create" });
       continue;
     }
+
     const destination = NAV_DESTINATIONS.find((entry) => entry.id === id);
     if (destination) entries.push({ kind: "destination", destination });
   }
+
   if (!seen.has("create")) {
     entries.push({ kind: "create" });
   }
+
   return entries;
 }
 
 export function resolveCreateAction(pathname: string, fallback: () => void): void {
   if (typeof window !== "undefined") {
     const globalWindow = window as any;
+
     if (pathname.startsWith("/settings/providers")) {
       if (typeof globalWindow.__openAddProvider === "function") {
         globalWindow.__openAddProvider();
