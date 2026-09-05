@@ -270,15 +270,18 @@ jobs:
       - name: Apply Android overrides
         run: node scripts/apply-android-overrides.mjs
 
-      - name: Configure Android signing
+      - name: Configure optional Android signing
         env:
           ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
+          # Debug builds use the Android debug keystore automatically and do not
+          # require release-signing secrets. Preserve release-signing support when
+          # the secrets are available for repositories that still provide them.
           if [ -z "$ANDROID_KEY_BASE64" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
-            echo "Missing Android signing secrets."
-            exit 1
+            echo "Android release-signing secrets not provided; continuing with debug signing."
+            exit 0
           fi
 
           base64 -d <<< "$ANDROID_KEY_BASE64" > "$RUNNER_TEMP/keystore.jks"
@@ -324,7 +327,7 @@ jobs:
           fi
           echo "KOKORO_ESPEAK_ANDROID_BUNDLE_PATH=$DEST" >> "$GITHUB_ENV"
 
-      - name: Build Tauri Android app (Dev build)
+      - name: Build Tauri Android app (Debug build)
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
@@ -334,7 +337,7 @@ jobs:
           LETTUCE_ANDROID_APPLICATION_ID: dev.lettuceai.app
           RUST_BACKTRACE: 1
         run: |
-          bun run tauri android build --ci --config "$TAURI_CONFIG_OVERRIDE" --apk
+          bun run tauri android build --ci --config "$TAURI_CONFIG_OVERRIDE" --debug --apk
 
           echo "Disk usage after Android build:"
           df -h
@@ -349,73 +352,65 @@ jobs:
           echo "Disk usage after pruning build intermediates:"
           df -h
 
-      - name: Ensure signed APK output
+      - name: Verify installable debug APK output
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
-          ANDROID_KEY_ALIAS: ${{ env.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ env.ANDROID_KEY_PASSWORD }}
-          ANDROID_KEYSTORE_PATH: ${{ env.ANDROID_KEYSTORE_PATH }}
         run: |
-          APK_DIR="src-tauri/gen/android/app/build/outputs/apk/universal/release"
-          SIGNED_APK="$APK_DIR/app-universal-release.apk"
-          UNSIGNED_APK="$APK_DIR/app-universal-release-unsigned.apk"
+          APK_ROOT="src-tauri/gen/android/app/build/outputs/apk"
+          APK_DIR="$APK_ROOT/universal/debug"
+          DEBUG_APK="$APK_DIR/app-universal-debug.apk"
 
-          if [ ! -f "$SIGNED_APK" ] && [ ! -f "$UNSIGNED_APK" ]; then
-            echo "No APK found in $APK_DIR"
-            ls -la "$APK_DIR"
+          if [ ! -f "$DEBUG_APK" ]; then
+            echo "Debug APK not found at $DEBUG_APK"
+            find "$APK_ROOT" -type f -name "*.apk" -print || true
             exit 1
           fi
 
           BUILD_TOOLS="$(ls "$ANDROID_SDK_ROOT/build-tools" | sort -V | tail -1)"
-          ZIPALIGN="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS/zipalign"
           APKSIGNER="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS/apksigner"
-
-          if [ -f "$UNSIGNED_APK" ]; then
-            ALIGNED_APK="$APK_DIR/app-universal-release-aligned.apk"
-            "$ZIPALIGN" -f 4 "$UNSIGNED_APK" "$ALIGNED_APK"
-            "$APKSIGNER" sign \
-              --ks "$ANDROID_KEYSTORE_PATH" \
-              --ks-pass "pass:$ANDROID_KEY_PASSWORD" \
-              --key-pass "pass:$ANDROID_KEY_PASSWORD" \
-              --ks-key-alias "$ANDROID_KEY_ALIAS" \
-              --out "$SIGNED_APK" \
-              "$ALIGNED_APK"
-            rm -f "$ALIGNED_APK"
-          fi
-
-          "$APKSIGNER" verify --verbose "$SIGNED_APK"
-          rm -f "$UNSIGNED_APK"
+          "$APKSIGNER" verify --verbose "$DEBUG_APK"
 
       - name: Package Android artifacts
         run: |
           APK_ROOT="src-tauri/gen/android/app/build/outputs/apk"
-          SIGNED_APK="$APK_ROOT/universal/release/app-universal-release.apk"
+          DEBUG_APK="$APK_ROOT/universal/debug/app-universal-debug.apk"
           mkdir -p dist-artifacts
 
-          if [ ! -f "$SIGNED_APK" ]; then
-            echo "Signed universal APK not found at $SIGNED_APK"
+          if [ ! -f "$DEBUG_APK" ]; then
+            echo "Debug universal APK not found at $DEBUG_APK"
             exit 1
           fi
 
-          cp "$SIGNED_APK" dist-artifacts/android-universal-release.apk
+          cp "$DEBUG_APK" dist-artifacts/android-universal-debug.apk
 
           (
             cd "$APK_ROOT"
             find . -type f -name "*.apk" ! -name "*-unsigned.apk" | sort > "$GITHUB_WORKSPACE/dist-artifacts/apk-file-list.txt"
             if [ ! -s "$GITHUB_WORKSPACE/dist-artifacts/apk-file-list.txt" ]; then
-              echo "No signed APK files found under $APK_ROOT"
+              echo "No installable APK files found under $APK_ROOT"
               exit 1
             fi
             zip -9 "$GITHUB_WORKSPACE/dist-artifacts/android-apk-bundle.zip" -@ < "$GITHUB_WORKSPACE/dist-artifacts/apk-file-list.txt"
           )
+
+      - name: Upload Android APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            dist-artifacts/android-universal-debug.apk
+            dist-artifacts/android-apk-bundle.zip
+            dist-artifacts/apk-file-list.txt
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload Android artifacts to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare_release.outputs.tag }}
           files: |
-            dist-artifacts/android-universal-release.apk
+            dist-artifacts/android-universal-debug.apk
             dist-artifacts/android-apk-bundle.zip
           fail_on_unmatched_files: true
 
@@ -463,3 +458,4 @@ jobs:
                 throw error;
               }
             }
+            
