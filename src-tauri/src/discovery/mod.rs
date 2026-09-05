@@ -1,4 +1,6 @@
+mod proxy;
 use std::cmp::Ordering;
+use proxy::get_working_client;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -538,7 +540,7 @@ pub async fn discovery_fetch_card_detail(
         format!("fetching card detail from {}", url),
     );
 
-    let client = reqwest::Client::new();
+    let client = get_working_client().await?;
     let resp = client
         .get(&url)
         .send()
@@ -626,7 +628,7 @@ pub async fn discovery_fetch_cards(
     descending: Option<bool>,
 ) -> Result<Vec<DiscoveryCard>, String> {
     let card_type = normalize_type(&card_type)?;
-    let client = reqwest::Client::new();
+    let client = get_working_client().await?;
     let mut cards = fetch_cards(&app, card_type, &client).await?;
     let pure_mode_level = read_pure_mode_level(&app);
     filter_nsfw_cards(&mut cards, &pure_mode_level);
@@ -640,12 +642,11 @@ pub async fn discovery_fetch_cards(
 }
 
 #[tauri::command]
-pub async fn discovery_fetch_sections(
-    app: AppHandle,
+pub async fn discovery_fetch_sections(app: AppHandle,
     sort_by: Option<String>,
     descending: Option<bool>,
 ) -> Result<DiscoverySections, String> {
-    let client = reqwest::Client::new();
+    let client = get_working_client().await?;
     let (mut newest, mut popular, mut trending) = tokio::try_join!(
         fetch_cards(&app, "newest", &client),
         fetch_cards(&app, "popular", &client),
@@ -721,7 +722,7 @@ pub async fn discovery_search_cards(
         format!("fetching search cards with params {:?}", params),
     );
 
-    let client = reqwest::Client::new();
+    let client = get_working_client().await?;
     let resp = client
         .get(CARD_SEARCH_BASE_URL)
         .query(&params)
@@ -777,7 +778,7 @@ pub async fn discovery_fetch_alternate_greetings(
         format!("Fetching alternate greetings from: {}", url),
     );
 
-    let client = reqwest::Client::new();
+    let client = get_working_client().await?;
     let resp = client
         .get(&url)
         .send()
@@ -820,7 +821,7 @@ pub async fn discovery_fetch_tags(app: AppHandle, card_id: String) -> Result<Vec
         format!("Fetching tags from: {}", url),
     );
 
-    let client = reqwest::Client::new();
+    let client = get_working_client().await?;
     let resp = client
         .get(&url)
         .send()
@@ -881,7 +882,7 @@ pub async fn discovery_fetch_author_info(
         format!("Fetching author info from: {}", url),
     );
 
-    let client = reqwest::Client::new();
+    let client = get_working_client().await?;
     let resp = client
         .get(&url)
         .send()
@@ -930,7 +931,7 @@ async fn discovery_fetch_lorebook(
         format!("Fetching lorebook from: {}", url),
     );
 
-    let client = reqwest::Client::new();
+    let client = get_working_client().await?;
     let resp = client
         .get(&url)
         .send()
@@ -986,7 +987,7 @@ pub async fn discovery_import_character(app: AppHandle, path: String) -> Result<
     };
 
     // Fetch avatar image from CDN
-    let client = reqwest::Client::new();
+    let client = get_working_client().await?;
 
     // Save avatar image locally using CDN URL
     let avatar_cdn_url = get_card_image(
@@ -1266,3 +1267,5 @@ pub async fn discovery_import_character(app: AppHandle, path: String) -> Result<
 
     Ok(character_id)
 }
+
+    
