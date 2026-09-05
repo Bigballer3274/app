@@ -87,27 +87,36 @@ jobs:
               "branch": branch,
               "per_page": 100,
           })
+
           url = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow}/runs?{params}"
 
           headers = {
               "Accept": "application/vnd.github+json",
               "X-GitHub-Api-Version": "2022-11-28",
           }
+
           if token:
               headers["Authorization"] = f"Bearer {token}"
 
           req = urllib.request.Request(url, headers=headers)
+
           with urllib.request.urlopen(req) as resp:
               data = json.load(resp)
 
           best = None
+
           for run in data.get("workflow_runs", []):
               if run.get("conclusion") != "success":
                   continue
+
               run_number = int(run.get("run_number") or 0)
               run_attempt = int(run.get("run_attempt") or 1)
-              if run_number < current_run or (run_number == current_run and run_attempt < current_attempt):
+
+              if run_number < current_run or (
+                  run_number == current_run and run_attempt < current_attempt
+              ):
                   key = (run_number, run_attempt)
+
                   if best is None or key > best:
                       best = key
 
@@ -115,15 +124,19 @@ jobs:
               print(f"{best[0]}\t{best[1]}")
           PY
           )"
+
           if [[ -n "${PREV_SUCCESS_RUN_INFO}" ]]; then
             IFS=$'\t' read -r PREV_RUN PREV_ATTEMPT <<< "${PREV_SUCCESS_RUN_INFO}"
+
             PREV_TAG="$(git tag --list "${TAG_PREFIX}-${PREV_RUN}-${PREV_ATTEMPT}-*" --sort=-creatordate | head -n 1)"
+
             if [[ -z "${PREV_TAG}" ]]; then
               PREV_TAG="$(git tag --list "${TAG_PREFIX}-${PREV_RUN}-*" --sort=-creatordate | head -n 1)"
             fi
           fi
 
           BODY_DELIM="BODY_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+
           {
             echo "body<<${BODY_DELIM}"
             echo "Automated Android build artifacts for commit \`${GITHUB_SHA}\`."
@@ -132,16 +145,19 @@ jobs:
 
             if [[ -n "$PREV_TAG" ]]; then
               PREV_SHA="$(git rev-list -n 1 "${PREV_TAG}")"
+
               echo "### Changes since previous Android build \`${PREV_TAG}\`"
               echo "Compare: ${REPO_URL}/compare/${PREV_TAG}...${GITHUB_SHA}"
               echo
 
               if git merge-base --is-ancestor "${PREV_SHA}" "${GITHUB_SHA}"; then
                 print_commit_range "${PREV_TAG}..${GITHUB_SHA}" "No new commits since the previous Android build."
+
               elif git merge-base --is-ancestor "${GITHUB_SHA}" "${PREV_SHA}"; then
                 echo "- This build is on an older commit than the previous Android build."
                 echo "- Commits in previous build but not this build:"
                 print_commit_range "${GITHUB_SHA}..${PREV_TAG}" "No differing commits found."
+
               else
                 echo "- Current and previous Android builds are on different branches."
                 echo "- Commits only in this build:"
@@ -149,10 +165,12 @@ jobs:
                 echo "- Commits only in previous build:"
                 print_commit_range "${GITHUB_SHA}..${PREV_TAG}" "No unique commits in previous build."
               fi
+
             else
               echo "### Changes"
               echo "- No previous successful Android build tag found."
             fi
+
             echo "${BODY_DELIM}"
           } >> "$GITHUB_OUTPUT"
 
@@ -169,6 +187,7 @@ jobs:
   android:
     needs: prepare_release
     runs-on: ubuntu-latest
+
     env:
       APTABASE_KEY: ${{ secrets.APTABASE_KEY }}
 
@@ -260,6 +279,7 @@ jobs:
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           VERSION="0.1.${{ github.run_number }}-dev.$SHORT_SHA"
+
           printf 'TAURI_CONFIG_OVERRIDE=%s\n' \
             "{\"productName\":\"lettuceai-dev\",\"version\":\"$VERSION\"}" \
             >> "$GITHUB_ENV"
@@ -270,61 +290,83 @@ jobs:
       - name: Apply Android overrides
         run: node scripts/apply-android-overrides.mjs
 
-      - name: Configure optional Android signing
-        env:
-          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      - name: Remove release signing requirement for debug build
         run: |
-          # Debug builds use the Android debug keystore automatically and do not
-          # require release-signing secrets. Preserve release-signing support when
-          # the secrets are available for repositories that still provide them.
-          if [ -z "$ANDROID_KEY_BASE64" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
-            echo "Android release-signing secrets not provided; continuing with debug signing."
-            exit 0
-          fi
+          python3 - <<'PY'
+          from pathlib import Path
 
-          base64 -d <<< "$ANDROID_KEY_BASE64" > "$RUNNER_TEMP/keystore.jks"
-          cd src-tauri/gen/android
-          cat > keystore.properties << EOF
-          keyAlias=$ANDROID_KEY_ALIAS
-          password=$ANDROID_KEY_PASSWORD
-          storeFile=$RUNNER_TEMP/keystore.jks
-          EOF
-          {
-            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/keystore.jks"
-            echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS"
-            echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD"
-          } >> "$GITHUB_ENV"
+          path = Path("src-tauri/gen/android/app/build.gradle.kts")
+
+          if not path.exists():
+              raise SystemExit(f"Gradle file not found: {path}")
+
+          text = path.read_text()
+
+          start_marker = '    signingConfigs {'
+          end_marker = '    buildTypes {'
+
+          if start_marker in text:
+              start = text.index(start_marker)
+              end = text.index(end_marker, start)
+
+              text = text[:start] + text[end:]
+              print("Removed release signing configuration.")
+          else:
+              print("No signingConfigs block found; nothing to remove.")
+
+          release_signing_line = '            signingConfig = signingConfigs.getByName("release")\n'
+
+          if release_signing_line in text:
+              text = text.replace(release_signing_line, "")
+              print("Removed release signingConfig reference.")
+          else:
+              print("No release signingConfig reference found.")
+
+          path.write_text(text)
+          PY
+
+          echo "Final signing-related lines:"
+          grep -n -i "signing" src-tauri/gen/android/app/build.gradle.kts || true
 
       - name: Fetch eSpeak NG Android bundle
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
           PIN_FILE=".github/espeak-android-bundle.env"
+
           if [ ! -f "$PIN_FILE" ]; then
             echo "Missing $PIN_FILE — publish a bundle via .github/workflows/espeak-android-bundle.yml first." >&2
             exit 1
           fi
-          # shellcheck disable=SC1090
+
           . "$PIN_FILE"
-          if [ -z "${BUNDLE_TAG:-}" ] || [ -z "${BUNDLE_ASSET:-}" ] || [ -z "${BUNDLE_SHA256:-}" ]; then
+
+          if [ -z "${BUNDLE_TAG:-}" ] || \
+             [ -z "${BUNDLE_ASSET:-}" ] || \
+             [ -z "${BUNDLE_SHA256:-}" ]; then
             echo "Bundle pin is incomplete (BUNDLE_TAG/BUNDLE_ASSET/BUNDLE_SHA256). Update $PIN_FILE." >&2
             exit 1
           fi
+
           DEST="$RUNNER_TEMP/$BUNDLE_ASSET"
+
           echo "Downloading $BUNDLE_ASSET from release $BUNDLE_TAG"
+
           gh release download "$BUNDLE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "$BUNDLE_ASSET" \
             --output "$DEST" \
             --clobber
+
           ACTUAL="$(sha256sum "$DEST" | awk '{print $1}')"
+
           if [ "$ACTUAL" != "$BUNDLE_SHA256" ]; then
             echo "Bundle sha256 mismatch. Expected $BUNDLE_SHA256, got $ACTUAL" >&2
             exit 1
           fi
+
           echo "KOKORO_ESPEAK_ANDROID_BUNDLE_PATH=$DEST" >> "$GITHUB_ENV"
 
       - name: Build Tauri Android app (Debug build)
@@ -343,10 +385,14 @@ jobs:
           df -h
 
           rm -rf src-tauri/target
-          find src-tauri/gen/android/app/build -mindepth 1 -maxdepth 1 \
+
+          find src-tauri/gen/android/app/build \
+            -mindepth 1 \
+            -maxdepth 1 \
             ! -name outputs \
             ! -name kotlin \
             -exec rm -rf {} +
+
           rm -rf src-tauri/gen/android/.gradle/caches/build-cache-* || true
 
           echo "Disk usage after pruning build intermediates:"
@@ -369,12 +415,14 @@ jobs:
 
           BUILD_TOOLS="$(ls "$ANDROID_SDK_ROOT/build-tools" | sort -V | tail -1)"
           APKSIGNER="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS/apksigner"
+
           "$APKSIGNER" verify --verbose "$DEBUG_APK"
 
       - name: Package Android artifacts
         run: |
           APK_ROOT="src-tauri/gen/android/app/build/outputs/apk"
           DEBUG_APK="$APK_ROOT/universal/debug/app-universal-debug.apk"
+
           mkdir -p dist-artifacts
 
           if [ ! -f "$DEBUG_APK" ]; then
@@ -386,12 +434,21 @@ jobs:
 
           (
             cd "$APK_ROOT"
-            find . -type f -name "*.apk" ! -name "*-unsigned.apk" | sort > "$GITHUB_WORKSPACE/dist-artifacts/apk-file-list.txt"
+
+            find . \
+              -type f \
+              -name "*.apk" \
+              ! -name "*-unsigned.apk" \
+              | sort > "$GITHUB_WORKSPACE/dist-artifacts/apk-file-list.txt"
+
             if [ ! -s "$GITHUB_WORKSPACE/dist-artifacts/apk-file-list.txt" ]; then
               echo "No installable APK files found under $APK_ROOT"
               exit 1
             fi
-            zip -9 "$GITHUB_WORKSPACE/dist-artifacts/android-apk-bundle.zip" -@ < "$GITHUB_WORKSPACE/dist-artifacts/apk-file-list.txt"
+
+            zip -9 \
+              "$GITHUB_WORKSPACE/dist-artifacts/android-apk-bundle.zip" \
+              -@ < "$GITHUB_WORKSPACE/dist-artifacts/apk-file-list.txt"
           )
 
       - name: Upload Android APK as workflow artifact
@@ -419,8 +476,11 @@ jobs:
     needs:
       - prepare_release
       - android
+
     if: ${{ always() && needs.prepare_release.result == 'success' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
+
     runs-on: ubuntu-latest
+
     steps:
       - name: Delete prerelease and tag
         uses: actions/github-script@v7
@@ -429,6 +489,7 @@ jobs:
         with:
           script: |
             const tag = process.env.RELEASE_TAG;
+
             if (!tag) {
               core.info("No release tag from prepare_release; skipping cleanup.");
               return;
@@ -437,8 +498,18 @@ jobs:
             const { owner, repo } = context.repo;
 
             try {
-              const release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
-              await github.rest.repos.deleteRelease({ owner, repo, release_id: release.data.id });
+              const release = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag
+              });
+
+              await github.rest.repos.deleteRelease({
+                owner,
+                repo,
+                release_id: release.data.id
+              });
+
               core.info(`Deleted release ${tag} (id=${release.data.id}).`);
             } catch (error) {
               if (error.status === 404) {
@@ -449,7 +520,12 @@ jobs:
             }
 
             try {
-              await github.rest.git.deleteRef({ owner, repo, ref: `tags/${tag}` });
+              await github.rest.git.deleteRef({
+                owner,
+                repo,
+                ref: `tags/${tag}`
+              });
+
               core.info(`Deleted tag ${tag}.`);
             } catch (error) {
               if (error.status === 404) {
@@ -458,4 +534,3 @@ jobs:
                 throw error;
               }
             }
-            
